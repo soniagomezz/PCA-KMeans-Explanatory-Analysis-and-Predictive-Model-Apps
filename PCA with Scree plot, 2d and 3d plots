@@ -1,0 +1,206 @@
+# Install necessary packages if not already installed
+library(shiny)
+library(dplyr)
+library(factoextra)
+library(plotly)
+library(modeest)
+library(palmerpenguins)
+library(ggplot2)
+library(gridExtra)
+
+# Define UI
+ui <- fluidPage(
+  titlePanel("Dimensionality Reduction and Clustering with Palmer Penguins Data"),
+  
+  # Create tabs for different outputs
+  tabsetPanel(
+    tabPanel("Processed Data", dataTableOutput("processed_data")),
+    tabPanel("Scaled Data", dataTableOutput("scaled_data")),
+    
+    # Display PCA results
+    tabPanel(
+      "PCA Scree Plot", 
+      plotOutput("pca_scree_plot"),
+      downloadButton("download_scree_plot", "Download Scree Plot")
+    ),
+    
+    # Display K-means clustering results
+    tabPanel(
+      "K-means Clustering (2D)", 
+      plotOutput("clustering_plot"),
+      downloadButton("download_clustering_plot", "Download 2D Clustering Plot")
+    ),
+    
+    # Display 3D K-means clustering results
+    tabPanel(
+      "K-means Clustering (3D)", 
+      plotlyOutput("clustering_3d_plot"),
+      downloadButton("download_clustering_3d_plot", "Download 3D Clustering Plot")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output) {
+  
+  # Preprocess the data
+  processed_data <- reactive({
+    # Handle missing values: replace NAs for numeric variables with median
+    penguins_clean <- palmerpenguins::penguins
+    
+    # Replace NAs in numeric columns with median
+    numeric_columns <- sapply(penguins_clean, is.numeric)
+    for (col in names(penguins_clean)[numeric_columns]) {
+      penguins_clean[[col]][is.na(penguins_clean[[col]])] <- median(penguins_clean[[col]], na.rm = TRUE)
+    }
+    
+    # Replace NAs in categorical columns with mode
+    categorical_columns <- sapply(penguins_clean, is.character)
+    for (col in names(penguins_clean)[categorical_columns]) {
+      penguins_clean[[col]][is.na(penguins_clean[[col]])] <- mlv(penguins_clean[[col]], method = "mfv")$M
+    }
+    
+    return(penguins_clean)
+  })
+  
+  # Scaled data
+  scaled_data <- reactive({
+    # Get the processed data
+    penguins_clean <- processed_data()
+    
+    # Select only numeric columns for scaling
+    numeric_data <- penguins_clean %>%
+      select_if(is.numeric)
+    
+    # Scale numeric columns
+    scaled_data <- scale(numeric_data)
+    
+    # Combine the scaled data back with the original dataset
+    penguins_clean_scaled <- cbind(penguins_clean %>% select(-where(is.numeric)), scaled_data)
+    
+    return(penguins_clean_scaled)
+  })
+  
+  # Display the processed data
+  output$processed_data <- renderDataTable({
+    processed_data()
+  })
+  
+  # Display the scaled data
+  output$scaled_data <- renderDataTable({
+    scaled_data()
+  })
+  
+  # Perform PCA and display the scree plot
+  output$pca_scree_plot <- renderPlot({
+    # Select only numeric columns for PCA
+    numeric_data <- processed_data() %>%
+      select_if(is.numeric)
+    
+    # Perform PCA
+    pca_result <- prcomp(numeric_data, scale. = TRUE)
+    
+    # Scree plot with percentage of variance
+    fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 100))
+  })
+  
+  # Download the scree plot
+  output$download_scree_plot <- downloadHandler(
+    filename = function() { "scree_plot.png" },
+    content = function(file) {
+      png(file)
+      numeric_data <- processed_data() %>%
+        select_if(is.numeric)
+      pca_result <- prcomp(numeric_data, scale. = TRUE)
+      plot <- fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 100))
+      print(plot)
+      dev.off()
+    }
+  )
+  
+  # Apply K-means clustering and compare with species
+  output$clustering_plot <- renderPlot({
+    # Select only numeric columns for clustering
+    numeric_data <- processed_data() %>%
+      select_if(is.numeric)
+    
+    # Perform k-means clustering (using 3 clusters as an example)
+    set.seed(123) # For reproducibility
+    kmeans_result <- kmeans(numeric_data, centers = 3)
+    
+    # Add clustering results to the data
+    penguins_clustered <- processed_data() %>%
+      mutate(Cluster = as.factor(kmeans_result$cluster))
+    
+    # Plot the clusters
+    ggplot(penguins_clustered, aes(x = bill_length_mm, y = bill_depth_mm, color = Cluster)) +
+      geom_point() +
+      labs(title = "K-means Clustering (2D)", color = "Cluster")
+  })
+  
+  # Download the 2D clustering plot
+  output$download_clustering_plot <- downloadHandler(
+    filename = function() { "clustering_plot_2d.png" },
+    content = function(file) {
+      png(file)
+      numeric_data <- processed_data() %>%
+        select_if(is.numeric)
+      kmeans_result <- kmeans(numeric_data, centers = 3)
+      penguins_clustered <- processed_data() %>%
+        mutate(Cluster = as.factor(kmeans_result$cluster))
+      plot <- ggplot(penguins_clustered, aes(x = bill_length_mm, y = bill_depth_mm, color = Cluster)) +
+        geom_point() +
+        labs(title = "K-means Clustering (2D)", color = "Cluster")
+      print(plot)
+      dev.off()
+    }
+  )
+  
+  # 3D Plot for K-means clustering
+  output$clustering_3d_plot <- renderPlotly({
+    # Select only numeric columns for clustering
+    numeric_data <- processed_data() %>%
+      select_if(is.numeric)
+    
+    # Perform k-means clustering
+    set.seed(123) # For reproducibility
+    kmeans_result <- kmeans(numeric_data, centers = 3)
+    
+    # Add clustering results to the data
+    penguins_clustered <- processed_data() %>%
+      mutate(Cluster = as.factor(kmeans_result$cluster))
+    
+    # 3D scatter plot using Plotly
+    plot_ly(penguins_clustered, x = ~bill_length_mm, y = ~bill_depth_mm, z = ~flipper_length_mm, color = ~Cluster, 
+            type = "scatter3d", mode = "markers") %>%
+      layout(title = "K-means Clustering (3D)", scene = list(
+        xaxis = list(title = 'Bill Length'),
+        yaxis = list(title = 'Bill Depth'),
+        zaxis = list(title = 'Flipper Length')
+      ))
+  })
+  
+  # Download the 3D clustering plot
+  output$download_clustering_3d_plot <- downloadHandler(
+    filename = function() { "clustering_plot_3d.html" },
+    content = function(file) {
+      # Save the plotly plot as an HTML file for now (PNG export of 3D plotly is more complex)
+      numeric_data <- processed_data() %>%
+        select_if(is.numeric)
+      kmeans_result <- kmeans(numeric_data, centers = 3)
+      penguins_clustered <- processed_data() %>%
+        mutate(Cluster = as.factor(kmeans_result$cluster))
+      plot <- plot_ly(penguins_clustered, x = ~bill_length_mm, y = ~bill_depth_mm, z = ~flipper_length_mm, color = ~Cluster, 
+                      type = "scatter3d", mode = "markers") %>%
+        layout(title = "K-means Clustering (3D)", scene = list(
+          xaxis = list(title = 'Bill Length'),
+          yaxis = list(title = 'Bill Depth'),
+          zaxis = list(title = 'Flipper Length')
+        ))
+      htmlwidgets::saveWidget(as_widget(plot), file)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui = ui, server = server)
