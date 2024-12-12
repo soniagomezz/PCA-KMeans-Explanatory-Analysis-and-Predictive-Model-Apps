@@ -1,0 +1,154 @@
+library(shiny)
+library(palmerpenguins)
+library(dplyr)
+library(ggplot2)
+library(car)
+
+# Helper functions for missing value replacement
+replace_missing_values <- function(data) {
+  data %>% mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .))) %>%
+    mutate(across(where(is.character), ~ ifelse(is.na(.), {
+      tab <- table(.); names(tab)[which.max(tab)]
+    }, .)))
+}
+
+# UI
+ui <- fluidPage(
+  titlePanel("Predictive Model Shiny App"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("response_var", "Select Response Variable:", choices = NULL),
+      selectInput("explanatory_vars", "Select Explanatory Variables:", choices = NULL, multiple = TRUE),
+      actionButton("build_model", "Build Model"),
+      actionButton("forward_selection", "Perform Forward Selection"),
+      actionButton("backward_elimination", "Perform Backward Elimination"),
+      downloadButton("download_plots", "Download Assumption Plots")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Data", DT::dataTableOutput("data_table")),
+        tabPanel("Model Assumptions", plotOutput("assumption_plots"), verbatimTextOutput("assumption_text")),
+        tabPanel("Model Summary", verbatimTextOutput("model_summary")),
+        tabPanel("Regression Equation", verbatimTextOutput("regression_equation")),
+        tabPanel("Model Comparison", DT::dataTableOutput("model_comparison"))
+      )
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  # Data processing
+  processed_data <- reactive({
+    replace_missing_values(penguins)
+  })
+  
+  # Update variable selection inputs
+  observe({
+    updateSelectInput(session, "response_var", choices = names(processed_data()))
+    updateSelectInput(session, "explanatory_vars", choices = names(processed_data()))
+  })
+  
+  # Display processed data
+  output$data_table <- DT::renderDataTable({
+    processed_data()
+  })
+  
+  # Build model
+  model <- reactiveVal()
+  
+  observeEvent(input$build_model, {
+    req(input$response_var, input$explanatory_vars)
+    formula <- as.formula(paste(input$response_var, "~", paste(input$explanatory_vars, collapse = "+")))
+    model(lm(formula, data = processed_data()))
+  })
+  
+  # Check model assumptions
+  output$assumption_plots <- renderPlot({
+    req(model())
+    par(mfrow = c(2, 2))
+    plot(model())
+  })
+  
+  output$download_plots <- downloadHandler(
+    filename = function() { "assumption_plots.png" },
+    content = function(file) {
+      png(file)
+      par(mfrow = c(2, 2))
+      plot(model())
+      dev.off()
+    }
+  )
+  
+  output$assumption_text <- renderPrint({
+    req(model())
+    vif_values <- vif(model())
+    list(
+      "Linearity" = "Check scatter plots in assumption plots.",
+      "Independence" = durbinWatsonTest(model()),
+      "Homoscedasticity" = "Check Residuals vs Fitted in assumption plots.",
+      "Normality" = shapiro.test(residuals(model())),
+      "Multicollinearity (VIF)" = vif_values
+    )
+  })
+  
+  # Display model summary
+  output$model_summary <- renderPrint({
+    req(model())
+    summary(model())
+  })
+  
+  # Display regression equation
+  output$regression_equation <- renderPrint({
+    req(model())
+    mod <- model()
+    formula <- as.character(formula(mod))
+    coefficients <- coef(mod)
+    eq <- paste(formula[2], "=", paste(paste(names(coefficients), coefficients, sep = " * "), collapse = " + "))
+    list(
+      "Equation" = eq,
+      "R-squared" = summary(mod)$r.squared,
+      "Adjusted R-squared" = summary(mod)$adj.r.squared
+    )
+  })
+  
+  # Compare models
+  models <- reactiveVal(list())
+  
+  observeEvent(input$build_model, {
+    models(append(models(), list(model())))
+  })
+  
+  output$model_comparison <- DT::renderDataTable({
+    req(length(models()) > 1)
+    comparison <- data.frame(
+      Model = seq_along(models()),
+      Adjusted_R2 = sapply(models(), function(mod) summary(mod)$adj.r.squared),
+      AIC = sapply(models(), AIC),
+      BIC = sapply(models(), BIC)
+    )
+    comparison
+  })
+  
+  # Forward selection
+  observeEvent(input$forward_selection, {
+    req(input$response_var)
+    full_formula <- as.formula(paste(input$response_var, "~ ."))
+    step_model <- step(lm(full_formula, data = processed_data()), direction = "forward")
+    model(step_model)
+  })
+  
+  # Backward elimination
+  observeEvent(input$backward_elimination, {
+    req(input$response_var)
+    full_formula <- as.formula(paste(input$response_var, "~ ."))
+    step_model <- step(lm(full_formula, data = processed_data()), direction = "backward")
+    model(step_model)
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
